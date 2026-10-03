@@ -10,6 +10,28 @@ export type ToolDef = {
   wrappedBody?: boolean;
 };
 
+export type ParamLocation = "path" | "query" | "header" | "body";
+
+export type ParamDraft = {
+  name: string;
+  in: ParamLocation;
+  type: string;
+  required: boolean;
+  description: string;
+  schema?: JSONSchema;
+};
+
+/** Tool no formato de formulário (como o backend devolve e recebe). */
+export type ToolDraft = {
+  name: string;
+  description: string;
+  method: string;
+  path: string;
+  enabled: boolean;
+  wrappedBody?: boolean;
+  params: ParamDraft[];
+};
+
 export type McpSummary = {
   id: string;
   name: string;
@@ -18,7 +40,7 @@ export type McpSummary = {
   createdAt: string;
   url: string;
   headerNames: string[];
-  tools: ToolDef[];
+  tools: ToolDraft[];
 };
 
 export type ChatMessage =
@@ -30,7 +52,13 @@ export type ChatMessage =
     }
   | { role: "tool"; tool_call_id: string; content: string };
 
-export type Config = { openai: boolean; model: string };
+export type Config = {
+  openai: boolean;
+  model: string;
+  keySource?: "interface" | "env" | null;
+  keyPreview?: string | null;
+  settingsFile?: string;
+};
 
 /** Chamada ao backend web (/api/*); lança Error com a mensagem do servidor. */
 export async function backend<T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {

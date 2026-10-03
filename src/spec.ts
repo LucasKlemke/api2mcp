@@ -1,4 +1,8 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import SwaggerParser from "@apidevtools/swagger-parser";
 import type { OpenAPIV3 } from "openapi-types";
 
@@ -18,17 +22,52 @@ async function fetchJson(url: string): Promise<unknown> {
   return body;
 }
 
+/** Parece o conteúdo de um spec (colado), e não uma URL ou caminho? */
+const looksLikeContent = (s: string) => /```|^\s*\{|^\s*(openapi|swagger)\s*:/m.test(s);
+
+/**
+ * Extrai o spec de um texto colado: aceita JSON/YAML puro ou a resposta inteira de um chat,
+ * com texto antes/depois e o spec dentro de um bloco ```json / ```yaml.
+ * Devolve um objeto (JSON) ou o caminho de um arquivo temporário (YAML).
+ */
+async function parseContent(text: string): Promise<unknown> {
+  const fenced = [...text.matchAll(/```[a-zA-Z]*\s*\n([\s\S]*?)```/g)].map((m) => m[1]);
+  const body = (fenced.find((b) => /"?(openapi|swagger)"?\s*:/.test(b)) ?? text).trim();
+  if (body.startsWith("{")) {
+    try {
+      return JSON.parse(body);
+    } catch (err) {
+      throw new Error(`O spec colado não é um JSON válido: ${(err as Error).message}`);
+    }
+  }
+  if (/^(openapi|swagger)\s*:/m.test(body)) {
+    const file = join(tmpdir(), `api2mcp-spec-${createHash("sha256").update(body).digest("hex").slice(0, 12)}.yaml`);
+    await writeFile(file, body);
+    return file;
+  }
+  throw new Error("Não encontrei um spec OpenAPI no texto colado (esperava JSON ou YAML começando com openapi:).");
+}
+
 export async function loadSpec(baseUrl: string, specOption?: string): Promise<LoadedSpec> {
   let raw: unknown;
   let source: string;
 
   if (specOption) {
     source = specOption;
-    try {
+    if (isUrl(specOption)) {
+      try {
+        raw = await fetchJson(specOption);
+      } catch (err) {
+        throw new Error(`Não foi possível carregar o spec em ${specOption}: ${(err as Error).message}`);
+      }
+    } else if (existsSync(specOption)) {
       // swagger-parser lê arquivos locais (JSON ou YAML) direto pelo caminho
-      raw = isUrl(specOption) ? await fetchJson(specOption) : specOption;
-    } catch (err) {
-      throw new Error(`Não foi possível carregar o spec em ${specOption}: ${(err as Error).message}`);
+      raw = specOption;
+    } else if (looksLikeContent(specOption)) {
+      raw = await parseContent(specOption);
+      source = "spec colado";
+    } else {
+      throw new Error(`Arquivo de spec não encontrado: ${specOption}`);
     }
   } else {
     const base = baseUrl.replace(/\/+$/, "");
@@ -46,7 +85,8 @@ export async function loadSpec(baseUrl: string, specOption?: string): Promise<Lo
     if (!raw) {
       throw new Error(
         `Nenhum spec OpenAPI encontrado em ${base}. Caminhos tentados:\n${tried.join("\n")}\n` +
-          `Informe o spec manualmente com --spec <url-ou-arquivo>.`,
+          `Informe o spec manualmente com --spec <url-ou-arquivo>.\n` +
+          `Não tem spec? Rode "api2mcp prompt ${base}" e cole o prompt no seu assistente de IA (Claude Code, Cursor, ChatGPT) para gerar um openapi.json a partir do código.`,
       );
     }
     source ??= base;

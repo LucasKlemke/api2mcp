@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { backend, exampleFor, type ToolDef } from "../api";
+import { SpecHelp, cleanSpecError, isNoSpecError } from "../SpecHelp";
 
 type Inspect = { title?: string; source: string; tools: ToolDef[] };
 
@@ -168,12 +169,21 @@ export function ApiTab({ apiUrl }: { apiUrl: string }) {
   const [data, setData] = useState<Inspect | null>(null);
   const [error, setError] = useState("");
   const [reload, setReload] = useState(0);
+  // spec colado pelo usuário (API sem Swagger); vale só para a URL atual
+  const [spec, setSpec] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    setSpec("");
+  }, [apiUrl]);
 
   useEffect(() => {
     // debounce: o campo de URL muda a cada tecla
     const t = setTimeout(() => {
       setError("");
-      backend<Inspect>("/api/inspect", { body: { baseUrl: apiUrl } })
+      setLoading(true);
+      backend<Inspect>("/api/inspect", { body: { baseUrl: apiUrl, spec } })
+        .finally(() => setLoading(false))
         .then(setData)
         .catch((err: Error) => {
           setData(null);
@@ -181,7 +191,7 @@ export function ApiTab({ apiUrl }: { apiUrl: string }) {
         });
     }, 400);
     return () => clearTimeout(t);
-  }, [apiUrl, reload]);
+  }, [apiUrl, reload, spec]);
 
   return (
     <div className="api">
@@ -190,7 +200,15 @@ export function ApiTab({ apiUrl }: { apiUrl: string }) {
           <h2>{data?.title ?? "API"}</h2>
           {data && (
             <p className="muted">
-              Spec: <a href={data.source} target="_blank" rel="noreferrer">{data.source}</a> · {data.tools.length} operações
+              Spec:{" "}
+              {/^https?:/.test(data.source) ? (
+                <a href={data.source} target="_blank" rel="noreferrer">
+                  {data.source}
+                </a>
+              ) : (
+                data.source
+              )}{" "}
+              · {data.tools.length} operações
             </p>
           )}
         </div>
@@ -198,7 +216,8 @@ export function ApiTab({ apiUrl }: { apiUrl: string }) {
           Recarregar spec
         </button>
       </div>
-      {error && <div className="alert error pre">{error}</div>}
+      {error && <div className="alert error pre">{cleanSpecError(error)}</div>}
+      {isNoSpecError(error) && <SpecHelp baseUrl={apiUrl} busy={loading} onUseSpec={setSpec} />}
       {data?.tools.map((t) => <Operation key={`${t.method} ${t.path}`} tool={t} apiUrl={apiUrl} />)}
     </div>
   );

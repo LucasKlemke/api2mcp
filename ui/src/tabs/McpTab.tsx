@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { backend, type ChatMessage, type Config, type McpSummary } from "../api";
+import { SpecHelp, cleanSpecError, isNoSpecError } from "../SpecHelp";
+import { ToolsManager } from "./ToolsManager";
 
 const SUGGESTIONS = [
   "O que você consegue fazer com esta API?",
@@ -26,7 +28,7 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-function CreateForm({ apiUrl, config, onCreated }: { apiUrl: string; config: Config; onCreated: (m: McpSummary) => void }) {
+function CreateForm({ apiUrl, config, onCreated, openSettings }: { apiUrl: string; config: Config; onCreated: (m: McpSummary) => void; openSettings: () => void }) {
   const [baseUrl, setBaseUrl] = useState(apiUrl);
   const [name, setName] = useState("");
   const [enhance, setEnhance] = useState(false);
@@ -34,25 +36,31 @@ function CreateForm({ apiUrl, config, onCreated }: { apiUrl: string; config: Con
   const [headers, setHeaders] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [showHelp, setShowHelp] = useState(false);
 
   useEffect(() => {
     setBaseUrl(apiUrl);
   }, [apiUrl]);
 
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
+  const create = async (specValue: string) => {
     setBusy(true);
     setError("");
     try {
-      onCreated(await backend<McpSummary>("/api/mcps", { body: { baseUrl, name, enhance, spec, headers } }));
+      onCreated(await backend<McpSummary>("/api/mcps", { body: { baseUrl, name, enhance, spec: specValue, headers } }));
       setName("");
       setSpec("");
       setHeaders("");
+      setShowHelp(false);
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setBusy(false);
     }
+  };
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    create(spec);
   };
 
   return (
@@ -69,9 +77,12 @@ function CreateForm({ apiUrl, config, onCreated }: { apiUrl: string; config: Con
       <details className="advanced">
         <summary>Avançado: spec e autenticação</summary>
         <label>
-          Spec OpenAPI <small className="muted">(URL ou arquivo; padrão: procura em /openapi.json etc.)</small>
-          <input value={spec} onChange={(e) => setSpec(e.target.value)} placeholder="https://.../openapi.json" spellCheck={false} />
+          Spec OpenAPI <small className="muted">(URL, arquivo ou o conteúdo colado; padrão: procura em /openapi.json etc.)</small>
+          <textarea value={spec} onChange={(e) => setSpec(e.target.value)} rows={2} placeholder="https://.../openapi.json" spellCheck={false} />
         </label>
+        <button type="button" className="link" onClick={() => setShowHelp(!showHelp)}>
+          Não tem spec? Gere um com a sua IA
+        </button>
         <label>
           Headers <small className="muted">(um por linha, enviados em toda chamada)</small>
           <textarea value={headers} onChange={(e) => setHeaders(e.target.value)} rows={2} placeholder="Authorization: Bearer sk_test_..." spellCheck={false} />
@@ -82,13 +93,31 @@ function CreateForm({ apiUrl, config, onCreated }: { apiUrl: string; config: Con
         <input type="checkbox" checked={enhance} onChange={(e) => setEnhance(e.target.checked)} />
         <span>
           Melhorar descrições com LLM <code>--enhance</code>
-          {!config.openai && <small className="muted"> · requer OPENAI_API_KEY</small>}
+          {!config.openai && (
+            <small className="muted">
+              {" "}
+              · requer{" "}
+              <button type="button" className="link" onClick={openSettings}>
+                chave da OpenAI
+              </button>
+            </small>
+          )}
         </span>
       </label>
       <button className="primary" disabled={busy}>
         {busy ? (enhance ? "Gerando e melhorando…" : "Gerando…") : "Criar MCP"}
       </button>
-      {error && <div className="alert error pre">{error}</div>}
+      {error && <div className="alert error pre">{cleanSpecError(error)}</div>}
+      {(showHelp || isNoSpecError(error)) && (
+        <SpecHelp
+          baseUrl={baseUrl}
+          busy={busy}
+          onUseSpec={(s) => {
+            setSpec(s);
+            create(s);
+          }}
+        />
+      )}
     </form>
   );
 }
@@ -114,7 +143,19 @@ function ToolStep({ name, args, result }: { name: string; args: string; result?:
   );
 }
 
-function Chat({ mcp, config, messages, setMessages }: { mcp: McpSummary; config: Config; messages: ChatMessage[]; setMessages: (m: ChatMessage[]) => void }) {
+function Chat({
+  mcp,
+  config,
+  messages,
+  setMessages,
+  openSettings,
+}: {
+  mcp: McpSummary;
+  config: Config;
+  messages: ChatMessage[];
+  setMessages: (m: ChatMessage[]) => void;
+  openSettings: () => void;
+}) {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -182,7 +223,14 @@ function Chat({ mcp, config, messages, setMessages }: { mcp: McpSummary; config:
         {busy && <div className="bubble assistant typing">pensando e chamando tools…</div>}
       </div>
 
-      {!config.openai && <div className="alert warn">Defina <code>OPENAI_API_KEY</code> no arquivo <code>.env</code> e reinicie o servidor web para usar o chat.</div>}
+      {!config.openai && (
+        <div className="alert warn needs-key">
+          <span>Para usar o chat, configure sua chave da OpenAI.</span>
+          <button className="primary small" onClick={openSettings}>
+            ⚙ Configurar
+          </button>
+        </div>
+      )}
       {error && <div className="alert error">{error}</div>}
 
       <form
@@ -206,11 +254,12 @@ function Chat({ mcp, config, messages, setMessages }: { mcp: McpSummary; config:
   );
 }
 
-export function McpTab({ apiUrl, config }: { apiUrl: string; config: Config }) {
+export function McpTab({ apiUrl, config, openSettings }: { apiUrl: string; config: Config; openSettings: () => void }) {
   const [mcps, setMcps] = useState<McpSummary[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [chats, setChats] = useState<Record<string, ChatMessage[]>>({});
   const [error, setError] = useState("");
+  const [view, setView] = useState<"tools" | "chat">("chat");
 
   useEffect(() => {
     backend<McpSummary[]>("/api/mcps")
@@ -235,6 +284,7 @@ export function McpTab({ apiUrl, config }: { apiUrl: string; config: Config }) {
         <CreateForm
           apiUrl={apiUrl}
           config={config}
+          openSettings={openSettings}
           onCreated={(m) => {
             setMcps((list) => [...list, m]);
             setSelected(m.id);
@@ -251,7 +301,7 @@ export function McpTab({ apiUrl, config }: { apiUrl: string; config: Config }) {
                 <button className="mcp-item" onClick={() => setSelected(m.id)}>
                   <span className="mcp-name">{m.name}</span>
                   <span className="muted small">
-                    {m.tools.length} tools{m.enhanced && " · ✦ enhanced"}
+                    {m.tools.filter((t) => t.enabled).length} tools{m.enhanced && " · ✦ enhanced"}
                   </span>
                 </button>
                 <button className="icon danger" onClick={() => remove(m.id)} aria-label={`Remover ${m.name}`}>
@@ -284,17 +334,26 @@ export function McpTab({ apiUrl, config }: { apiUrl: string; config: Config }) {
                 <code>claude mcp add --transport http {slug(current.name)} {current.url}</code>
                 <CopyButton text={`claude mcp add --transport http ${slug(current.name)} ${current.url}`} />
               </div>
-              <details className="tool-list">
-                <summary>{current.tools.length} tools</summary>
-                {current.tools.map((t) => (
-                  <div key={t.name} className="tool-desc">
-                    <code>{t.name}</code> <span className="muted small">{t.method} {t.path}</span>
-                    <p className="pre">{t.description}</p>
-                  </div>
-                ))}
-              </details>
             </div>
-            <Chat key={current.id} mcp={current} config={config} messages={chats[current.id] ?? []} setMessages={(msgs) => setChats((c) => ({ ...c, [current.id]: msgs }))} />
+            <div className="segmented view-switch" role="tablist">
+              <button role="tab" aria-selected={view === "chat"} className={view === "chat" ? "active" : ""} onClick={() => setView("chat")}>
+                Chat
+              </button>
+              <button role="tab" aria-selected={view === "tools"} className={view === "tools" ? "active" : ""} onClick={() => setView("tools")}>
+                Tools ({current.tools.filter((t) => t.enabled).length})
+              </button>
+            </div>
+            {view === "tools" ? (
+              <ToolsManager
+                key={current.id}
+                mcp={current}
+                config={config}
+                openSettings={openSettings}
+                onChange={(updated) => setMcps((list) => list.map((m) => (m.id === updated.id ? updated : m)))}
+              />
+            ) : (
+              <Chat key={current.id} mcp={current} config={config} openSettings={openSettings} messages={chats[current.id] ?? []} setMessages={(msgs) => setChats((c) => ({ ...c, [current.id]: msgs }))} />
+            )}
           </>
         ) : (
           <div className="empty big">

@@ -7,8 +7,6 @@ import type { McpEntry } from "./server.js";
 const MAX_STEPS = 10;
 const model = () => process.env.OPENAI_MODEL || "gpt-5-mini";
 
-export const chatConfig = () => ({ openai: Boolean(process.env.OPENAI_API_KEY), model: model() });
-
 const systemPrompt = (entry: McpEntry) =>
   `Você é um assistente que opera a API "${entry.name}" através das tools de um servidor MCP.
 Use as tools para cumprir o pedido do usuário; encadeie quantas chamadas forem necessárias (ex: listar antes de atualizar).
@@ -20,7 +18,7 @@ Se uma tool retornar erro, leia a mensagem e corrija a chamada. Responda em port
  */
 export async function chat(entry: McpEntry, url: string, history: ChatCompletionMessageParam[]) {
   if (!process.env.OPENAI_API_KEY) {
-    throw new Error("Defina OPENAI_API_KEY no arquivo .env e reinicie o servidor web.");
+    throw new Error("Configure sua chave da OpenAI em ⚙ Configurações.");
   }
 
   const client = new Client({ name: "api2mcp-web-chat", version: "0.1.0" });

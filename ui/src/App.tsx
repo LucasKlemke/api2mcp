@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { backend, type Config } from "./api";
+import { Settings } from "./Settings";
 import { ApiTab } from "./tabs/ApiTab";
 import { McpTab } from "./tabs/McpTab";
 
@@ -30,6 +31,8 @@ export function App() {
   const [tab, setTab] = useState<TabId>(() => (TABS.some((t) => t.id === storage.get("tab")) ? (storage.get("tab") as TabId) : "api"));
   const [apiUrl, setApiUrl] = useState(() => storage.get("apiUrl") || "http://localhost:8000");
   const [config, setConfig] = useState<Config>({ openai: false, model: "" });
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const openSettings = () => setSettingsOpen(true);
 
   useEffect(() => {
     storage.set("tab", tab);
@@ -58,6 +61,9 @@ export function App() {
           API
           <input value={apiUrl} onChange={(e) => setApiUrl(e.target.value.trim())} spellCheck={false} />
         </label>
+        <button className={`settings-btn ${config.openai ? "" : "attention"}`} onClick={openSettings} title="Configurações">
+          ⚙ <span>{config.openai ? "OpenAI conectada" : "Configurar OpenAI"}</span>
+        </button>
       </header>
 
       {/* as abas ficam montadas para preservar estado (chat, formulários) ao alternar */}
@@ -66,9 +72,10 @@ export function App() {
           <ApiTab apiUrl={apiUrl} />
         </section>
         <section hidden={tab !== "mcp"}>
-          <McpTab apiUrl={apiUrl} config={config} />
+          <McpTab apiUrl={apiUrl} config={config} openSettings={openSettings} />
         </section>
       </main>
+      {settingsOpen && <Settings config={config} onSaved={setConfig} onClose={() => setSettingsOpen(false)} />}
     </div>
   );
 }

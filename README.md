@@ -32,7 +32,7 @@ api2mcp http://localhost:8000 --transport http    # servidor MCP em http://local
 
 ```
 api2mcp <baseUrl>
-  --spec <urlOuArquivo>     spec OpenAPI (opcional; JSON ou YAML)
+  --spec <urlOuArquivo>     spec OpenAPI (opcional; URL, arquivo JSON/YAML ou o conteúdo colado)
   --name <nome>             nome do servidor (padrão: info.title do spec)
   --transport <stdio|http>  padrão: stdio
   --port <n>                padrão: 9000 (só http)
@@ -41,9 +41,26 @@ api2mcp <baseUrl>
   --enhance                 melhora as descrições com um LLM
 
 api2mcp ui [--port 4100]    interface web
+api2mcp prompt [baseUrl]    prompt para sua IA gerar o spec de uma API que não tem
 ```
 
 Sem `--spec`, o spec é procurado em `/openapi.json`, `/swagger.json`, `/v3/api-docs` e `/docs/openapi.json`.
+
+### API sem spec (sem Swagger)
+
+Se a API não tem spec OpenAPI, peça para o seu assistente de IA gerar um a partir do código:
+
+```bash
+api2mcp prompt http://localhost:3000 | pbcopy    # copia o prompt (no Linux: | xclip -sel clip)
+```
+
+Cole o prompt no Claude Code, Cursor ou Copilot aberto no projeto da API (ou num chat como ChatGPT, junto com os arquivos de rotas). Ele mapeia as rotas e gera um `openapi.json`. Depois:
+
+```bash
+api2mcp http://localhost:3000 --spec ./openapi.json --list
+```
+
+O `--spec` também aceita o conteúdo colado direto (JSON, YAML ou a resposta inteira do chat com o bloco ```json). Na interface web, isso aparece sozinho quando nenhum spec é encontrado: botão para copiar o prompt e um campo para colar o resultado.
 
 API com autenticação:
 
@@ -60,11 +77,24 @@ api2mcp ui        # http://localhost:4100
 - **API**: explorer estilo Swagger/FastAPI gerado do spec; preencha parâmetros/body, execute e veja o `curl`, status e resposta.
 - **MCP**: crie um servidor MCP a partir da URL da API (com spec, headers de autenticação e `--enhance` opcionais). Cada MCP criado é um servidor MCP real em `http://localhost:4100/mcp/<id>` (Streamable HTTP), com o comando `claude mcp add` pronto para copiar. Ao lado, um chat com um modelo da OpenAI que chama as tools desse MCP para testar.
 
+### Gerenciar tools
+
+Em cada MCP, a aba **Tools** permite:
+
+- **editar** nome, descrição, método, rota e parâmetros (nome, onde vai — path/query/header/body —, tipo, obrigatório e descrição);
+- **ativar/desativar** tools sem apagar (só as ativas aparecem para o agente) e **remover**;
+- **criar** tools novas à mão, inclusive para rotas que não estão no spec;
+- **gerar com IA**: descreva a tool em linguagem natural e o LLM monta um rascunho para você revisar antes de salvar.
+
+As mudanças valem na hora para o endpoint `/mcp/<id>` e para o chat. Cada tool faz uma chamada HTTP à API: um parâmetro só tem efeito se a API realmente o suportar.
+
 Os MCPs criados ficam em `.api2mcp/servers.json` no diretório onde você rodou o comando (inclusive os headers, em texto puro: prefira tokens de teste). Os endpoints `/mcp/<id>` não têm autenticação: use só em localhost.
 
-## `--enhance` e chat
+## Chave da OpenAI (chat, gerar com IA e `--enhance`)
 
-Configure num `.env` no diretório atual (ou como variáveis de ambiente):
+O jeito mais simples é pela interface: `api2mcp ui` → **⚙ Configurar OpenAI**, cole a chave e salve. Ela é testada antes de salvar e fica só na sua máquina, em `~/.api2mcp/settings.json` (permissão só do seu usuário). O navegador nunca recebe a chave de volta. A mesma chave passa a valer para o `--enhance` da CLI.
+
+Também dá para usar variáveis de ambiente ou um `.env` no diretório atual (a chave salva pela interface tem prioridade):
 
 ```bash
 OPENAI_API_KEY=sk-...

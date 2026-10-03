@@ -8,9 +8,12 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { Hono } from "hono";
 import { enhanceTools } from "../enhance.js";
 import { createMcpServer } from "../server.js";
+import { specPrompt } from "../prompt.js";
 import { loadSpec } from "../spec.js";
-import { specToTools, type ToolDef } from "../tools.js";
-import { chat, chatConfig } from "./chat.js";
+import { specToTools } from "../tools.js";
+import { chat } from "./chat.js";
+import { loadSettings, removeApiKey, saveSettings, settingsStatus } from "../settings.js";
+import { draftToTool, generateDraft, toolToDraft, type StoredTool, type ToolDraft } from "./tool-drafts.js";
 
 export type McpEntry = {
   id: string;
@@ -19,7 +22,7 @@ export type McpEntry = {
   enhanced: boolean;
   createdAt: string;
   headers: Record<string, string>;
-  tools: ToolDef[];
+  tools: StoredTool[];
 };
 
 const STORE_FILE = ".api2mcp/servers.json";
@@ -78,13 +81,33 @@ export async function startWeb({ port }: { port: number }): Promise<void> {
     createdAt: m.createdAt,
     url: mcpUrl(m.id),
     headerNames: Object.keys(m.headers ?? {}),
-    tools: m.tools.map((t) => ({ name: t.name, description: t.description, method: t.method, path: t.path, inputSchema: t.inputSchema })),
+    tools: m.tools.map(toolToDraft),
   });
+
+  const activeTools = (m: McpEntry) => m.tools.filter((t) => !t.disabled);
 
   const app = new Hono();
   app.onError((err, c) => c.json({ error: err.message }, 500));
 
-  app.get("/api/config", (c) => c.json(chatConfig()));
+  await loadSettings();
+
+  app.get("/api/config", (c) => c.json(settingsStatus()));
+
+  app.put("/api/settings", async (c) => {
+    try {
+      await saveSettings(await c.req.json<{ openaiApiKey?: string; openaiModel?: string }>());
+      return c.json(settingsStatus());
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 400);
+    }
+  });
+
+  app.delete("/api/settings/openai-key", async (c) => {
+    await removeApiKey();
+    return c.json(settingsStatus());
+  });
+
+  app.get("/api/spec-prompt", (c) => c.json({ prompt: specPrompt(c.req.query("baseUrl") || undefined) }));
 
   // Spec -> tools, usado pela aba "API" para montar o explorer
   app.post("/api/inspect", async (c) => {
@@ -133,6 +156,67 @@ export async function startWeb({ port }: { port: number }): Promise<void> {
     return c.body(null, 204);
   });
 
+  // ---- gerenciamento de tools de um MCP ----
+
+  const findEntry = (id: string) => {
+    const entry = mcps.get(id);
+    if (!entry) throw Object.assign(new Error("MCP não encontrado."), { status: 404 });
+    return entry;
+  };
+  const toolError = (c: { json: (b: unknown, s: 400 | 404) => Response }, err: unknown) =>
+    c.json({ error: (err as Error).message }, (err as { status?: number }).status === 404 ? 404 : 400);
+
+  app.post("/api/mcps/:id/tools", async (c) => {
+    try {
+      const entry = findEntry(c.req.param("id"));
+      const tool = draftToTool(await c.req.json<ToolDraft>(), new Set(entry.tools.map((t) => t.name)));
+      entry.tools.push(tool);
+      await saveStore();
+      return c.json(summary(entry), 201);
+    } catch (err) {
+      return toolError(c, err);
+    }
+  });
+
+  app.put("/api/mcps/:id/tools/:name", async (c) => {
+    try {
+      const entry = findEntry(c.req.param("id"));
+      const idx = entry.tools.findIndex((t) => t.name === c.req.param("name"));
+      if (idx === -1) return c.json({ error: "Tool não encontrada." }, 404);
+      const others = new Set(entry.tools.filter((_, i) => i !== idx).map((t) => t.name));
+      entry.tools[idx] = draftToTool(await c.req.json<ToolDraft>(), others);
+      await saveStore();
+      return c.json(summary(entry));
+    } catch (err) {
+      return toolError(c, err);
+    }
+  });
+
+  app.delete("/api/mcps/:id/tools/:name", async (c) => {
+    try {
+      const entry = findEntry(c.req.param("id"));
+      const before = entry.tools.length;
+      entry.tools = entry.tools.filter((t) => t.name !== c.req.param("name"));
+      if (entry.tools.length === before) return c.json({ error: "Tool não encontrada." }, 404);
+      await saveStore();
+      return c.json(summary(entry));
+    } catch (err) {
+      return toolError(c, err);
+    }
+  });
+
+  // rascunho gerado por IA; não salva, a interface mostra para revisão
+  app.post("/api/mcps/:id/tools/generate", async (c) => {
+    try {
+      const entry = findEntry(c.req.param("id"));
+      const { prompt } = await c.req.json<{ prompt: string }>();
+      if (!prompt?.trim()) return c.json({ error: "Descreva o que a tool deve fazer." }, 400);
+      return c.json({ draft: await generateDraft(entry.name, entry.baseUrl, entry.tools, prompt) });
+    } catch (err) {
+      return toolError(c, err);
+    }
+  });
+
   app.post("/api/chat", async (c) => {
     const { mcpId, messages } = await c.req.json<{ mcpId: string; messages: unknown[] }>();
     const entry = mcps.get(mcpId);
@@ -151,7 +235,7 @@ export async function startWeb({ port }: { port: number }): Promise<void> {
     if (c.req.method !== "POST") {
       return c.json({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed." }, id: null }, 405);
     }
-    const server = createMcpServer({ name: entry.name, tools: entry.tools, baseUrl: entry.baseUrl, headers: entry.headers ?? {} });
+    const server = createMcpServer({ name: entry.name, tools: activeTools(entry), baseUrl: entry.baseUrl, headers: entry.headers ?? {} });
     const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     await server.connect(transport);
     const res = await transport.handleRequest(c.req.raw);

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command, InvalidArgumentError } from "commander";
 import { enhanceTools } from "./enhance.js";
+import { specPrompt } from "./prompt.js";
 import { runHttp, runStdio } from "./server.js";
 import { loadSpec } from "./spec.js";
 import { specToTools, type ToolDef } from "./tools.js";
@@ -80,7 +81,7 @@ const program = new Command()
   .enablePositionalOptions()
   .description("Transforma uma API com spec OpenAPI em um servidor MCP")
   .argument("<baseUrl>", "URL base da API, ex: http://localhost:8000")
-  .option("--spec <urlOuArquivo>", "spec OpenAPI (URL ou arquivo local)")
+  .option("--spec <urlOuArquivo>", "spec OpenAPI (URL, arquivo local ou o conteúdo colado)")
   .option("--name <nome>", "nome do servidor (padrão: info.title do spec)")
   .option("--transport <stdio|http>", "transporte MCP", parseTransport, "stdio")
   .option("--port <n>", "porta do transporte http", parsePort, 9000)
@@ -90,6 +91,9 @@ const program = new Command()
   .action(async (baseUrl: string, opts: Options) => {
     const { spec, source, hash } = await loadSpec(baseUrl, opts.spec);
     console.error(`[api2mcp] spec carregado de ${source}`);
+
+    // a chave da OpenAI salva pela interface (api2mcp ui) também vale para o --enhance
+    if (opts.enhance) await (await import("./settings.js")).loadSettings();
 
     const original = specToTools(spec);
     const tools = opts.enhance ? await enhanceTools(original, hash) : original;
@@ -102,6 +106,14 @@ const program = new Command()
     const serverOpts = { name: opts.name ?? spec.info?.title ?? "api2mcp", tools, baseUrl, headers: opts.header };
     if (opts.transport === "http") await runHttp(serverOpts, opts.port);
     else await runStdio(serverOpts);
+  });
+
+program
+  .command("prompt")
+  .description("imprime um prompt para seu assistente de IA gerar o openapi.json de uma API sem spec")
+  .argument("[baseUrl]", "URL base da API, vai no campo servers do spec", "http://localhost:3000")
+  .action((baseUrl: string) => {
+    console.log(specPrompt(baseUrl));
   });
 
 program

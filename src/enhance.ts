@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import Anthropic from "@anthropic-ai/sdk";
-import OpenAI from "openai";
+import { completeJson, modelFor, pickProvider, type Provider } from "./llm.js";
 import type { ToolDef } from "./tools.js";
 
 type Enhancement = { description?: string; parameters?: Record<string, string> };
@@ -11,17 +10,6 @@ type CacheFile = Record<string, { model: string; createdAt: string; tools: Enhan
 
 const CACHE_DIR = ".api2mcp";
 const CACHE_FILE = join(CACHE_DIR, "enhanced.json");
-type Provider = "openai" | "anthropic";
-const DEFAULT_MODELS: Record<Provider, string> = { openai: "gpt-5-mini", anthropic: "claude-sonnet-5-5" };
-
-/** OpenAI tem prioridade; API2MCP_PROVIDER força um provedor. */
-function pickProvider(): Provider | undefined {
-  const forced = process.env.API2MCP_PROVIDER as Provider | undefined;
-  if (forced === "openai" || forced === "anthropic") return forced;
-  if (process.env.OPENAI_API_KEY) return "openai";
-  if (process.env.ANTHROPIC_API_KEY) return "anthropic";
-  return undefined;
-}
 
 const SYSTEM_PROMPT = `Você é especialista em projetar tools para agentes de IA (Model Context Protocol).
 Recebe uma lista de tools geradas automaticamente a partir de uma API OpenAPI e reescreve as descrições para que um LLM escolha a tool certa e preencha os parâmetros corretamente.
@@ -59,15 +47,6 @@ async function writeCache(cache: CacheFile): Promise<void> {
   } catch (err) {
     console.error(`[api2mcp] aviso: não foi possível salvar o cache em ${CACHE_FILE}: ${(err as Error).message}`);
   }
-}
-
-/** Remove cercas de markdown e pega o objeto JSON mais externo. */
-export function parseLlmJson(raw: string): unknown {
-  let s = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-  const start = s.indexOf("{");
-  const end = s.lastIndexOf("}");
-  if (start !== -1 && end > start) s = s.slice(start, end + 1);
-  return JSON.parse(s);
 }
 
 /** Converte a resposta do LLM em um mapa validado: só descrições de tools/parâmetros que existem. */
@@ -115,30 +94,6 @@ function apply(tools: ToolDef[], enh: EnhancementMap): ToolDef[] {
   });
 }
 
-async function complete(provider: Provider, model: string, user: string): Promise<string> {
-  if (provider === "openai") {
-    const res = await new OpenAI().chat.completions.create({
-      model,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: user },
-      ],
-    });
-    return res.choices[0]?.message?.content ?? "";
-  }
-  const msg = await new Anthropic().messages.create({
-    model,
-    max_tokens: 16000,
-    system: SYSTEM_PROMPT,
-    messages: [{ role: "user", content: user }],
-  });
-  return msg.content
-    .filter((b): b is Anthropic.TextBlock => b.type === "text")
-    .map((b) => b.text)
-    .join("");
-}
-
 async function callLlm(tools: ToolDef[], provider: Provider, model: string): Promise<EnhancementMap> {
   const payload = tools.map(({ name, description, method, path, inputSchema }) => ({
     name,
@@ -147,8 +102,8 @@ async function callLlm(tools: ToolDef[], provider: Provider, model: string): Pro
     path,
     inputSchema,
   }));
-  const text = await complete(provider, model, `Tools da API:\n\n${JSON.stringify(payload, null, 2)}`);
-  return validate(parseLlmJson(text), tools);
+  const parsed = await completeJson(provider, model, SYSTEM_PROMPT, `Tools da API:\n\n${JSON.stringify(payload, null, 2)}`);
+  return validate(parsed, tools);
 }
 
 /** Retorna as tools melhoradas; em qualquer falha, avisa e devolve as originais. */
@@ -158,7 +113,7 @@ export async function enhanceTools(tools: ToolDef[], specHash: string): Promise<
     console.error("[api2mcp] aviso: defina OPENAI_API_KEY (ou ANTHROPIC_API_KEY) para usar --enhance; seguindo com as descrições originais.");
     return tools;
   }
-  const model = process.env.API2MCP_MODEL || DEFAULT_MODELS[provider];
+  const model = modelFor(provider);
   const key = cacheKey(specHash, provider, model);
   const cache = await readCache();
 
